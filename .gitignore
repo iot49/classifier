@@ -1,0 +1,8 @@
+# Python
+__pycache__/
+*.py[cod]
+*.class
+.venv/
+.DS_Store
+.envrc
+.python-version
