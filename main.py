@@ -23,8 +23,8 @@ SHOW_IMG_SAMPLES = True
 LEARN = False
 
 DATA_DIR = Path("data")
-DPT = 20
-SIZE = 96
+DPT = 16
+SIZE = 48
 
 DB_DIR = Path("../datasets/train-track")
 R49_DIR = DB_DIR / "r49"
@@ -76,19 +76,20 @@ def r49_transforms(
         res.append(Brightness(max_lighting=max_lighting, p=p_lighting, batch=batch))
         res.append(Contrast(max_lighting=max_lighting, p=p_lighting, batch=batch))
     if min_scale != 1.0:
-        xtra_tfms = RandomResizedCropGPU(size, min_scale=min_scale, ratio=(1, 1)) + L(
-            xtra_tfms
-        )
+        xtra_tfms = RandomResizedCropGPU(size, min_scale=min_scale, ratio=(1, 1)) + L(xtra_tfms)
     return setup_aug_tfms(res + L(xtra_tfms))
 
 
 # create db from R49 files
 if CREATE_DB:
-    DB_DIR.mkdir(parents=True, exist_ok=True)
-    for r49_file in DATA_DIR.rglob("**/*.r49"):
-        r49 = R49File(r49_file, size=64, rotation_angles=[0], dpt=20, verbose=False)
-        print(f"Created {len(r49):3} samples from {r49_file}")
-        r49.save(DB_DIR)
+    SAMPLES_DIR.mkdir(parents=True, exist_ok=True)
+    for r49_file in R49_DIR.rglob("**/*.r49"):
+        try:
+            r49 = R49File(r49_file, size=SIZE, rotation_angles=[0, 30, 60, 90], dpt=DPT, verbose=False)
+            print(f"Created {len(r49):3} samples from {r49_file}")
+            r49.save(SAMPLES_DIR)
+        except Exception as e:
+            print(f"Failed to process {r49_file}: {e}")
 
 dblock = DataBlock(
     blocks=(ImageBlock, CategoryBlock),
@@ -96,17 +97,19 @@ dblock = DataBlock(
     get_items=get_image_files,
     get_y=parent_label,
 )
-dblock = dblock.new(
-    # item_tfms=Resize(SIZE),
-    batch_tfms=r49_transforms(
-        mult=1.0,
-        max_rotate=180.0,
-        max_lighting=0.2,
-        max_warp=0,
-        size=SIZE,
+
+if False:
+    dblock = dblock.new(
+        # item_tfms=Resize(SIZE),
+        batch_tfms=r49_transforms(
+            mult=1.0,
+            max_rotate=180.0,
+            max_lighting=0.2,
+            max_warp=0,
+            size=SIZE
+        )
     )
-)
-dls = dblock.dataloaders(DB_DIR, bs=32)
+dls = dblock.dataloaders(SAMPLES_DIR, bs=32)
 
 # Show some samples from the training set
 if SHOW_IMG_SAMPLES:

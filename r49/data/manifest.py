@@ -1,5 +1,5 @@
 from enum import Enum
-from typing import Dict, Literal, Optional
+from typing import Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -43,10 +43,11 @@ class Marker(BaseModel):
 
     x: int
     y: int
+    type: str = "track"
 
 
 class Size(BaseModel):
-    """Layout size dimensions in [mm] as indicated by `markers.calibration`."""
+    """Layout size dimensions in [mm] as indicated by `calibration`."""
 
     width: Optional[float] = None
     height: Optional[float] = None
@@ -56,7 +57,7 @@ class Layout(BaseModel):
     """Model railroad layout information."""
 
     scale: ValidScales
-    size: Size  # size of markers.calibration in [mm]
+    size: Size  # size of calibration in [mm]
     name: Optional[str] = None
     description: Optional[str] = None
     contact: Optional[str] = None
@@ -76,21 +77,32 @@ class Camera(BaseModel):
     model: Optional[str] = None
 
 
-class Markers(BaseModel):
-    """Collection of markers by category."""
+class Image(BaseModel):
+    """Image metadata."""
 
-    calibration: Dict[str, Marker] = Field(default_factory=dict)
-    label: Dict[str, Marker] = Field(default_factory=dict)
-    detector: Dict[str, Marker] = Field(default_factory=dict)
+    filename: str
+    labels: Dict[str, Marker] = Field(default_factory=dict)
 
 
 class Manifest(BaseModel):
-    """Complete manifest data structure for railroad layout labeling."""
+    """Complete manifest data structure for railroad layout labeling (Version 2)."""
 
     version: int
     layout: Layout
     camera: Camera
-    markers: Markers
+    calibration: Dict[str, Marker] = Field(default_factory=dict)
+    images: List[Image] = Field(default_factory=list)
+
+    @property
+    def number_of_images(self) -> int:
+        """Get the number of images in the manifest."""
+        return len(self.images)
+
+    def get_image(self, index: int) -> Image:
+        """Get the image at the specified index."""
+        if 0 <= index < len(self.images):
+            return self.images[index]
+        raise IndexError(f"Image index {index} out of range.")
 
     @property
     def get_scale_number(self) -> int:
@@ -106,10 +118,11 @@ class Manifest(BaseModel):
     def create_default(cls) -> "Manifest":
         """Create a default manifest with HO scale and empty markers."""
         return cls(
-            version=1,
+            version=2,
             layout=Layout(
                 name=None, scale=ValidScales.HO, size=Size(width=None, height=None)
             ),
             camera=Camera(resolution=Resolution(width=0, height=0)),
-            markers=Markers(),
+            calibration={},
+            images=[],
         )

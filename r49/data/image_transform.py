@@ -11,7 +11,7 @@ def apply_perspective_transform(
 ) -> tuple[MatLike, np.ndarray]:
     """Apply perspective transformation to an OpenCV image using calibration data from manifest."""
 
-    calibration = manifest.markers.calibration
+    calibration = manifest.calibration
     corner_points = ["rect-0", "rect-2", "rect-3", "rect-1"]
 
     # Source points (the quadrilateral in the image)
@@ -23,6 +23,7 @@ def apply_perspective_transform(
     # Scaling to meet image resolution target
     layout_size = manifest.layout.size
     scale = dpt / manifest.gauge_mm
+    if scale > 1: print(f"****** WARNING: upscaling image by {scale}x - increase camera resolution!")
 
     w = scale * layout_size.width
     h = scale * layout_size.height
