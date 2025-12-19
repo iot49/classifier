@@ -4,6 +4,8 @@ typings
 
 *.pth
 *.onnx
+*.ort
+export/
 
 # Python
 __pycache__/
