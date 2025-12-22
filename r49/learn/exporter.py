@@ -20,6 +20,8 @@ except ImportError as e:
 from .. import R49DataLoaders, R49Dataset
 from .config import LearnerConfig
 
+KEEP_ONNX = True
+
 
 class Exporter(LearnerConfig):
     
@@ -66,9 +68,9 @@ class Exporter(LearnerConfig):
         # Export both ONNX and ORT formats.
         # ONNX is the standard interchange format.
         # ORT format is optimized for ONNX Runtime (mobile/web) and is smaller/faster to load.
-        onnx_path_fp32 = export_dir / f"{self._model_name}.onnx"
-        onnx_path_fp16 = export_dir / f"{self._model_name}_fp16.onnx"
-        onnx_path_int8 = export_dir / f"{self._model_name}_int8.onnx"
+        onnx_path_fp32 = export_dir / "model_fp32.onnx"
+        onnx_path_fp16 = export_dir / "model_fp16.onnx"
+        onnx_path_int8 = export_dir / "model_int8.onnx"
         
         # 1. Export FP32 ONNX
         print(f"Exporting FP32 ONNX to {onnx_path_fp32}...")
@@ -122,37 +124,104 @@ class Exporter(LearnerConfig):
         metrics["error_rates"]["PyTorch (FP32)"] = err
         metrics["sizes_mb"]["PyTorch (FP32)"] = (self.model_dir / "model.pth").stat().st_size / (1024 * 1024)
         
-        err = self.validate_onnx(onnx_path_fp32, "ONNX (FP32)")
-        metrics["error_rates"]["ONNX (FP32)"] = err
-        metrics["sizes_mb"]["ONNX (FP32)"] = onnx_path_fp32.stat().st_size / (1024 * 1024) if onnx_path_fp32.exists() else 0
+        ort_path_fp32 = onnx_path_fp32.with_suffix(".ort")
+        ort_path_fp16 = onnx_path_fp16.with_suffix(".ort")
+        ort_path_int8 = onnx_path_int8.with_suffix(".ort")
+
+        err = self.validate_onnx(ort_path_fp32, "ORT (FP32)")
+        metrics["error_rates"]["ORT (FP32)"] = err
+        metrics["sizes_mb"]["ORT (FP32)"] = ort_path_fp32.stat().st_size / (1024 * 1024) if ort_path_fp32.exists() else 0
         
-        err = self.validate_onnx(onnx_path_fp16, "ONNX (FP16)")
-        metrics["error_rates"]["ONNX (FP16)"] = err
-        metrics["sizes_mb"]["ONNX (FP16)"] = onnx_path_fp16.stat().st_size / (1024 * 1024) if onnx_path_fp16.exists() else 0
+        err = self.validate_onnx(ort_path_fp16, "ORT (FP16)")
+        metrics["error_rates"]["ORT (FP16)"] = err
+        metrics["sizes_mb"]["ORT (FP16)"] = ort_path_fp16.stat().st_size / (1024 * 1024) if ort_path_fp16.exists() else 0
         
-        err = self.validate_onnx(onnx_path_int8, "ONNX (Int8)")
-        metrics["error_rates"]["ONNX (Int8)"] = err
-        metrics["sizes_mb"]["ONNX (Int8)"] = onnx_path_int8.stat().st_size / (1024 * 1024) if onnx_path_int8.exists() else 0
+        err = self.validate_onnx(ort_path_int8, "ORT (Int8)")
+        metrics["error_rates"]["ORT (Int8)"] = err
+        metrics["sizes_mb"]["ORT (Int8)"] = ort_path_int8.stat().st_size / (1024 * 1024) if ort_path_int8.exists() else 0
         
+        # 6. Copy config.json to export directory
+        config_src = self.model_dir / "config.json"
+        config_dst = export_dir / "model.config"
+        if config_src.exists():
+            print(f"Copying {config_src.name} -> {config_dst.name}")
+            shutil.copy(str(config_src), str(config_dst))
+            
+        # 7. Write README.md with metrics
+        notes_str = self.get_notes(metrics)
+        readme_path = export_dir / "README.md"
+        print(f"Writing {readme_path.name}")
+        readme_path.write_text(notes_str)
+            
         return metrics
         
     def _convert_to_ort(self, onnx_path: Path):
-        ort_path = onnx_path.with_suffix(".ort")
-        print(f"Converting {onnx_path} -> {ort_path}")
-        # Use subprocess to call the tool as the API can be flaky with paths
+        """
+        Converts an ONNX file to ORT format with runtime optimizations.
+        Renames the output to replace the original extension with .ort and .config,
+        keeping the optimized versions and removing intermediates.
+        """
+        # We expect the tool to generate:
+        # [stem].with_runtime_opt.ort
+        # [stem].required_operators.with_runtime_opt.config
+        
+        # We want to rename them to:
+        # [stem].ort
+        # [stem]_operators.config
+        
+        print(f"Converting {onnx_path} to ORT...")
+        
+        # Use subprocess to call the tool
         cmd = [
             sys.executable, "-m", "onnxruntime.tools.convert_onnx_models_to_ort", 
             str(onnx_path)
         ]
         
         try:
-            subprocess.run(cmd, check=True, capture_output=True)
-            if not ort_path.exists():
-                print(f"Warning: ORT file {ort_path} was not created despite successful exit code.")
+            # excessive output can be annoying, capturing it
+            _ = subprocess.run(cmd, check=True, capture_output=True)
         except subprocess.CalledProcessError as e:
             print(f"Failed to convert {onnx_path} to ORT: {e}")
             if e.stderr:
                 print(f"Error output: {e.stderr.decode()}")
+            return
+
+        # Define expected generated filenames
+        generated_ort = onnx_path.with_name(f"{onnx_path.stem}.with_runtime_opt.ort")
+        generated_config = onnx_path.with_name(f"{onnx_path.stem}.required_operators.with_runtime_opt.config")
+        
+        # Define target filenames
+        target_ort = onnx_path.with_suffix(".ort")
+        target_config = onnx_path.with_name(f"{onnx_path.stem}_operators.config")
+        
+        # Move/Rename optimized ORT file
+        if generated_ort.exists():
+            print(f"  Renaming {generated_ort.name} -> {target_ort.name}")
+            shutil.move(str(generated_ort), str(target_ort))
+        else:
+            print(f"Warning: Expected optimized file {generated_ort} not found.")
+
+        # Move/Rename config file
+        if generated_config.exists():
+            print(f"  Renaming {generated_config.name} -> {target_config.name}")
+            shutil.move(str(generated_config), str(target_config))
+        else:
+            print(f"Warning: Expected config file {generated_config} not found.")
+            
+        # Cleanup: Remove the unoptimized .ort file if it exists (generated by the tool by default)
+        # Note: shutil.move overwrites, so unopt_ort (same path as target_ort) is effectively replaced.
+        
+        # Let's clean up the unoptimized config
+        unopt_config = onnx_path.with_name(f"{onnx_path.stem}.required_operators.config")
+        if unopt_config.exists():
+            unopt_config.unlink()
+        
+        # Finally, remove the .onnx file after conversion as requested
+        if not KEEP_ONNX and onnx_path.exists():
+            print(f"  Removing {onnx_path.name}")
+            onnx_path.unlink()
+        
+        print(f"  Finished ORT conversion for {onnx_path.stem}")
 
     def validate(self, model, name: str):
         # Validate PyTorch model
@@ -206,17 +275,45 @@ class Exporter(LearnerConfig):
         print(f"[{name}] Error Rate: {err:.4f}")
         return err
 
-    # add size in MB to table and implement release candidate flag
+    def get_notes(self, metrics: dict) -> str:
+        """
+        Generates markdown notes for the exported model based on provided metrics.
+        """
+        notes = [f"# {self._model_name} Exported Model\n"]
+        notes.append("| Model | Error Rate | Size (MB) |")
+        notes.append("| --- | --- | --- |")
+        
+        # Sort model names for consistent output
+        for model in sorted(metrics["error_rates"].keys()):
+            err = metrics["error_rates"][model]
+            size = metrics["sizes_mb"].get(model, 0)
+            notes.append(f"| {model} | {err:.2%} | {size:.2f} |")
+            
+        notes.append("\n**Dataset Info:**")
+        notes.append(f"- Training Samples: {metrics['train_samples']}")
+        notes.append(f"- Validation Samples: {metrics['valid_samples']}")
+        notes.append(f"- Labels: {', '.join(self.labels)}")
+        
+        return "\n".join(notes)
+    
     def release(self, tag: str, release_candidate: bool = True):
         metrics = self.export()
         print(f"Creating GitHub release '{tag}'...")
         
         export_dir = self.model_dir / "export"
-        files_to_upload = list(export_dir.glob("*.onnx")) + list(export_dir.glob("*.ort"))
+        files_to_upload = list(export_dir.glob("*.ort")) + list(export_dir.glob("*_operators.config"))
         
-        # Include config.json
+        if KEEP_ONNX:
+            files_to_upload += list(export_dir.glob("*.onnx"))
+        
+        # Include model.config if it exists in export dir
+        model_config_path = export_dir / "model.config"
+        if model_config_path.exists():
+            files_to_upload.append(model_config_path)
+        
+        # For backwards compatibility/safety, try to include top-level config.json as well
         config_path = self.model_dir / "config.json"
-        if config_path.exists():
+        if config_path.exists() and config_path not in files_to_upload:
             files_to_upload.append(config_path)
         
         if not files_to_upload:
@@ -224,18 +321,7 @@ class Exporter(LearnerConfig):
             return
 
         # Generate Release Notes
-        notes = [f"Exported models for {self._model_name}\n"]
-        notes.append("| Model | Error Rate | Size (MB) |")
-        notes.append("| --- | --- | --- |")
-        for model, err in metrics["error_rates"].items():
-            size = metrics["sizes_mb"].get(model, 0)
-            notes.append(f"| {model} | {err:.2%} | {size:.2f} |")
-            
-        notes.append("\n**Dataset Info:**")
-        notes.append(f"- Training Samples: {metrics['train_samples']}")
-        notes.append(f"- Validation Samples: {metrics['valid_samples']}")
-        
-        notes_str = "\n".join(notes)
+        notes_str = self.get_notes(metrics)
 
         cmd = [
             "gh", "release", "create", tag,

@@ -14,7 +14,6 @@ from fastai.vision.all import (
 )
 
 from .. import R49DataLoaders, R49Dataset
-from ..utils import ScrollablePlot
 from .config import LearnerConfig
 
 VALID_PCT = 0.25
@@ -124,11 +123,6 @@ class Learner(LearnerConfig):
             
             
         plt.tight_layout()
-        
-        try:
-            ScrollablePlot(fig).show()
-        except Exception as e:
-            print(f"Failed to show scrollable plot, falling back to matplotlib: {e}")
-            plt.show()
+        plt.show()
 
     
